@@ -1,0 +1,111 @@
+# Keep `Casks/orchestrator.rb` pointing at the newest release, and prove the
+# result installs.
+#
+# **This tap pulls; nothing pushes to it.** The alternative was a job in the
+# app's release workflow holding a token for this repository, and a token that
+# can write here would sit in a workflow that also runs `npx` and a bundler.
+# Reading the public releases API needs no credential at all, so the only
+# secret involved is this repository's own `GITHUB_TOKEN`.
+#
+# The schedule is the floor. `mise run release` dispatches this at the end of a
+# release, so the usual path is a minute, and the daily run is what covers a tag
+# cut by hand.
+name: bump
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Nothing waits on this, so the hour is arbitrary and off the top of the
+    # hour to stay out of GitHub's own peak.
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.edit.outputs.changed }}
+      version: ${{ steps.edit.outputs.version }}
+    steps:
+      # Pinned by SHA: a tag is a mutable pointer, and this job is granted
+      # `contents: write` on the file everybody installs from.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - id: edit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM: kbarendrecht/orchestrator
+        run: |
+          set -e
+          cask=Casks/orchestrator.rb
+          tag=$(gh release view --repo "$UPSTREAM" --json tagName --jq .tagName)
+          version=${tag#v}
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          have=$(sed -n 's/^  version "\(.*\)"$/\1/p' "$cask")
+          if [ "$have" = "$version" ]; then
+            echo "changed=0" >> "$GITHUB_OUTPUT"
+            echo "the cask already says $version"
+            exit 0
+          fi
+
+          # **The sum comes from the release's own `.sha256`, not from a
+          # download of the dmg.** The release job writes one per asset, so the
+          # sum this cask carries is the one the build recorded — a dmg
+          # downloaded here and hashed here would agree with itself no matter
+          # what was served.
+          dmg="Orchestrator_${version}_aarch64.dmg"
+          gh release download "$tag" --repo "$UPSTREAM" -p "$dmg.sha256" -O sum.txt
+          sha=$(cut -d' ' -f1 sum.txt)
+          case $sha in
+            [0-9a-f]*) [ ${#sha} = 64 ] || { echo "::error::$dmg.sha256 is not a sha256: $sha"; exit 1; } ;;
+            *) echo "::error::$dmg.sha256 is not a sha256: $sha"; exit 1 ;;
+          esac
+          rm sum.txt
+
+          # One line each, and the count is the check: a cask that grew a second
+          # `version` line is one this rewrite would corrupt silently.
+          for pair in "version $version" "sha256 $sha"; do
+            key=${pair%% *}; val=${pair#* }
+            n=$(grep -c "^  $key \"" "$cask")
+            [ "$n" = 1 ] || { echo "::error::$cask has $n \`$key\` lines, expected 1"; exit 1; }
+            sed "s|^  $key \".*\"$|  $key \"$val\"|" "$cask" > "$cask.new"
+            mv "$cask.new" "$cask"
+          done
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "orchestrator $version" -- "$cask"
+          git push
+          echo "changed=1" >> "$GITHUB_OUTPUT"
+
+  # **The gate, and it runs after the push rather than before it.** A cask is
+  # audited and installed by name out of a tap, so there has to be a tap holding
+  # it. The previous version is one revert away, which is the cheaper failure.
+  verify:
+    needs: bump
+    if: needs.bump.outputs.changed == '1'
+    runs-on: macos-14
+    steps:
+      - name: The tap is installable
+        run: |
+          set -e
+          brew tap kbarendrecht/tap
+          # Style and metadata, plus the checks that reach the network: a url
+          # that 404s, a sum that disagrees with what is served.
+          brew audit --cask --online kbarendrecht/tap/orchestrator
+          brew install --cask kbarendrecht/tap/orchestrator
+
+      # What the `binary` stanza promises. `orch` lives in
+      # `Orchestrator.app/Contents/MacOS`, and this runs it through the symlink
+      # Homebrew put on PATH — the one thing about this cask that cannot be
+      # checked by reading it.
+      - name: `orch` is on PATH
+        run: |
+          set -e
+          which orch
+          orch --help > /dev/null
+
+      - name: The app is where the cask said
+        run: test -x "/Applications/Orchestrator.app/Contents/MacOS/orchestrator-desktop"
