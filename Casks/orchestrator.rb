@@ -2,8 +2,8 @@
 # reads the newest release of kbarendrecht/orchestrator and the `.sha256` asset
 # published beside the dmg. Edit them by hand only to roll a bad bump back.
 cask "orchestrator" do
-  version "2026.9.30"
-  sha256 "6ba19ce12fee9629c824b1e83aee1c3581105a5639d116773492d922db07b001"
+  version "2026.9.31"
+  sha256 "2b876d7929060f6ec50d8cf806b44412b5e1fb23cd91fceb0de6feb63c7b33fd"
 
   url "https://github.com/kbarendrecht/orchestrator/releases/download/v#{version}/Orchestrator_#{version}_aarch64.dmg"
   name "Orchestrator"
