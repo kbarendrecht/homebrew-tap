@@ -19,12 +19,15 @@ on:
     # hour to stay out of GitHub's own peak.
     - cron: "17 6 * * *"
 
-permissions:
-  contents: write
+# Nothing by default: each job names what it needs.
+permissions: {}
 
 jobs:
   bump:
     runs-on: ubuntu-latest
+    # The one job that writes: it pushes the bumped cask.
+    permissions:
+      contents: write
     outputs:
       changed: ${{ steps.edit.outputs.changed }}
       version: ${{ steps.edit.outputs.version }}
@@ -87,8 +90,16 @@ jobs:
     needs: bump
     if: needs.bump.outputs.changed == '1'
     runs-on: macos-14
+    # Read only: this job installs what it audits, and nothing here writes.
+    permissions:
+      contents: read
     steps:
       - name: The tap is installable
+        # `--online` asks the GitHub API, and without a token the runner shares a
+        # 60-an-hour limit with whoever else is on its address. That failed the
+        # audit after a bump that had worked, twice.
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
         run: |
           set -e
           brew tap kbarendrecht/tap
